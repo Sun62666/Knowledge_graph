@@ -3,7 +3,6 @@ import os
 from utils.config import LOG_FILE_PATH
 
 _logger_instance = None
-_handler_cache = set()
 
 
 def get_logger(name="KnowledgeGraph"):
@@ -38,3 +37,7 @@ def get_logger(name="KnowledgeGraph"):
     logger.propagate = False
     _logger_instance = logger
     return _logger_instance
+
+if __name__ == "__main__":
+    logger = get_logger()
+    logger.info("测试")

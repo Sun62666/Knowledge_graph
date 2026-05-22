@@ -1,8 +1,11 @@
 from typing import List, Tuple, Optional, Dict
 from utils.logger import get_logger
 from utils.config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
+from utils.cql_utils import escape_cql_value, escape_relation_type
 
 logger = get_logger()
+
+NEO4J_BATCH_SIZE = 500
 
 
 class Neo4jOperations:
@@ -20,12 +23,16 @@ class Neo4jOperations:
         self.user = user or NEO4J_USER
         self.password = password or NEO4J_PASSWORD
         self._driver = None
-        self._initialized = True
         self._connected = False
+        self._initialized = True
 
     def _get_driver(self):
         if self._driver is not None:
-            return self._driver
+            try:
+                self._driver.verify_connectivity()
+                return self._driver
+            except Exception:
+                self._driver = None
         try:
             from neo4j import GraphDatabase
             self._driver = GraphDatabase.driver(
@@ -74,42 +81,54 @@ class Neo4jOperations:
             logger.error(f"CQL执行失败: {e}, CQL: {cql[:100]}")
             return False, f"CQL执行失败: {e}"
 
-    def import_triplets(self, triplets: List[Tuple[str, str, str]]) -> Tuple[bool, str, int]:
+    def import_triplets(self, triplets: List[Tuple[str, str, str]], batch_size: int = NEO4J_BATCH_SIZE,progress_callback=None) -> Tuple[bool, str, int]:
         if not triplets:
             return False, "无三元组数据", 0
         driver = self._get_driver()
         if driver is None:
             return False, "Neo4j驱动未初始化", 0
 
-        success_count = 0
-        fail_count = 0
+        total_success = 0
+        total_fail = 0
+        total_batches = (len(triplets) + batch_size - 1) // batch_size
 
-        for e1, rel, e2 in triplets:
-            e1_escaped = e1.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
-            e2_escaped = e2.replace("\\", "\\\\").replace("'", "\\'").replace('"', '\\"')
+        for batch_idx in range(total_batches):
+            start = batch_idx * batch_size
+            end = min(start + batch_size, len(triplets))
+            batch = triplets[start:end]
 
-            import re
-            if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', rel):
-                rel_type = rel
-            else:
-                rel_type = f"`{rel}`"
+            grouped = {}
+            for e1, rel, e2 in batch:
+                rel_type = escape_relation_type(rel)
+                if rel_type not in grouped:
+                    grouped[rel_type] = []
+                grouped[rel_type].append({"e1": e1, "e2": e2})
 
-            cql = (
-                f"MERGE (a:Entity {{name: '{e1_escaped}'}}) "
-                f"MERGE (b:Entity {{name: '{e2_escaped}'}}) "
-                f"MERGE (a)-[:{rel_type}]->(b)"
-            )
-            ok, _ = self.execute_cql(cql)
-            if ok:
-                success_count += 1
-            else:
-                fail_count += 1
+            batch_ok = True
+            for rel_type, items in grouped.items():
+                try:
+                    with driver.session() as session:
+                        session.run(
+                            f"UNWIND $rows AS row "
+                            f"MERGE (a:Entity {{name: row.e1}}) "
+                            f"MERGE (b:Entity {{name: row.e2}}) "
+                            f"MERGE (a)-[:{rel_type}]->(b)",
+                            rows=items,
+                        )
+                    total_success += len(items)
+                except Exception as e:
+                    logger.error(f"批量导入失败(批次{batch_idx+1}, 关系类型{rel_type}): {e}")
+                    total_fail += len(items)
+                    batch_ok = False
+            if progress_callback:
+                progress_callback(batch_idx+1,total_batches,total_success,total_fail)
+            logger.info(f"批量导入进度: 批次{batch_idx+1}/{total_batches}, 本批{len(batch)}条")
 
-        msg = f"导入完成: 成功{success_count}条, 失败{fail_count}条"
+        msg = f"导入完成: 成功{total_success}条, 失败{total_fail}条, 共{total_batches}个批次"
         logger.info(msg)
-        return True, msg, success_count
+        return True, msg, total_success
 
-    def import_cql_script(self, cql_script: str) -> Tuple[bool, str, int]:
+    def import_cql_script(self, cql_script: str, progress_callback=None) -> Tuple[bool, str, int]:
         if not cql_script or not cql_script.strip():
             return False, "CQL脚本为空", 0
 
@@ -122,13 +141,17 @@ class Neo4jOperations:
 
         success_count = 0
         fail_count = 0
+        total_stmts = len(statements)
 
-        for stmt in statements:
+        for i,stmt in enumerate(statements):
             ok, _ = self.execute_cql(stmt)
             if ok:
                 success_count += 1
             else:
                 fail_count += 1
+
+            if progress_callback and (i % 50==0 or i == total_stmts - 1):
+                progress_callback(i+1,total_stmts,success_count,fail_count)
 
         msg = f"CQL脚本执行完成: 成功{success_count}条, 失败{fail_count}条"
         logger.info(msg)
@@ -210,6 +233,20 @@ class Neo4jOperations:
             logger.error(f"查询关系数失败: {e}")
             return 0
 
+    def get_relation_types(self) -> List[str]:
+        driver = self._get_driver()
+        if driver is None:
+            return []
+        try:
+            with driver.session() as session:
+                result = session.run(
+                    "MATCH ()-[r]->() RETURN DISTINCT type(r) AS rel_type ORDER BY rel_type"
+                )
+                return [record["rel_type"] for record in result]
+        except Exception as e:
+            logger.error(f"查询关系类型失败: {e}")
+            return []
+
     def clear_all(self) -> Tuple[bool, str]:
         driver = self._get_driver()
         if driver is None:
@@ -222,13 +259,3 @@ class Neo4jOperations:
         except Exception as e:
             logger.error(f"清空Neo4j失败: {e}")
             return False, f"清空失败: {e}"
-
-    def close(self):
-        if self._driver is not None:
-            self._driver.close()
-            self._driver = None
-            self._connected = False
-            logger.info("Neo4j连接已关闭")
-
-    def __del__(self):
-        self.close()

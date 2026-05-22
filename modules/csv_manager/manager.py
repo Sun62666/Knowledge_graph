@@ -1,9 +1,11 @@
 import os
-import re
+import traceback
+
 import pandas as pd
 from typing import List, Tuple, Optional
 from utils.logger import get_logger
 from utils.config import CSV_FILE_PATH, CQL_FILE_PATH
+from utils.cql_utils import escape_cql_value, escape_relation_type
 
 logger = get_logger()
 
@@ -14,16 +16,14 @@ class CSVManager:
         self.cql_path = cql_path or CQL_FILE_PATH
         os.makedirs(os.path.dirname(self.csv_path), exist_ok=True)
 
-    def _escape_cql_value(self, value: str) -> str:
-        value = value.replace("\\", "\\\\")
-        value = value.replace("'", "\\'")
-        value = value.replace('"', '\\"')
-        return value
-
-    def _escape_relation_type(self, relation: str) -> str:
-        if re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', relation):
-            return relation
-        return f"`{relation}`"
+    @staticmethod
+    def invalidate_cache():
+        try:
+            from main.pages.csv_manage import _cached_read_csv
+            _cached_read_csv.clear()
+            logger.info("CSV缓存已清除")
+        except Exception as e:
+            logger.warning(f"清除CSV缓存失败: {e}")
 
     def write_triplets(self, triplets: List[Tuple[str, str, str]], mode: str = "overwrite"):
         if not triplets:
@@ -39,6 +39,7 @@ class CSVManager:
                 logger.warning(f"读取已有CSV失败, 将覆盖写入: {e}")
         df_new.to_csv(self.csv_path, index=False, encoding="utf-8-sig")
         logger.info(f"CSV写入完成: {self.csv_path}, 共{len(df_new)}条记录")
+        self.invalidate_cache()
 
     def read_triplets(self) -> pd.DataFrame:
         if not os.path.exists(self.csv_path):
@@ -68,6 +69,7 @@ class CSVManager:
         df.at[index, "实体2"] = e2
         df.to_csv(self.csv_path, index=False, encoding="utf-8-sig")
         logger.info(f"CSV更新第{index}行: [{e1}, {rel}, {e2}]")
+        self.invalidate_cache()
 
     def delete_triplet(self, index: int):
         df = self.read_triplets()
@@ -77,6 +79,7 @@ class CSVManager:
         df = df.drop(index).reset_index(drop=True)
         df.to_csv(self.csv_path, index=False, encoding="utf-8-sig")
         logger.info(f"CSV删除第{index}行")
+        self.invalidate_cache()
 
     def add_triplet(self, e1: str, rel: str, e2: str):
         df = self.read_triplets()
@@ -84,11 +87,13 @@ class CSVManager:
         df = pd.concat([df, new_row], ignore_index=True)
         df.to_csv(self.csv_path, index=False, encoding="utf-8-sig")
         logger.info(f"CSV新增三元组: [{e1}, {rel}, {e2}]")
+        self.invalidate_cache()
 
     def clear_csv(self):
         df = pd.DataFrame(columns=["实体1", "关系", "实体2"])
         df.to_csv(self.csv_path, index=False, encoding="utf-8-sig")
         logger.info("CSV已清空")
+        self.invalidate_cache()
 
     def export_csv(self, export_path: str):
         df = self.read_triplets()
@@ -100,6 +105,7 @@ class CSVManager:
 
     def generate_cql(self) -> str:
         triplets = self.get_triplet_list()
+        # logger.info(f"【调用栈】{traceback.format_stack()}")
         if not triplets:
             logger.warning("无三元组数据, 无法生成CQL")
             return ""
@@ -108,9 +114,9 @@ class CSVManager:
         cql_lines.append("// 自动生成，请勿手动修改")
         cql_lines.append("")
         for e1, rel, e2 in triplets:
-            e1_escaped = self._escape_cql_value(str(e1))
-            e2_escaped = self._escape_cql_value(str(e2))
-            rel_escaped = self._escape_relation_type(str(rel))
+            e1_escaped = escape_cql_value(str(e1))
+            e2_escaped = escape_cql_value(str(e2))
+            rel_escaped = escape_relation_type(str(rel))
             cql = (
                 f"MERGE (a:Entity {{name: '{e1_escaped}'}}) "
                 f"MERGE (b:Entity {{name: '{e2_escaped}'}}) "

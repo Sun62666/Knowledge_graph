@@ -57,14 +57,13 @@ def build_graph_html(triplets: List[Dict], title: str = "知识图谱", height: 
             return f.read()
 
     try:
-        import networkx as nx
-        from pyvis.network import Network
+        import networkx as nx  # 图论与网络分析库（图数据结构，图算法，图分析）
+        from pyvis.network import Network # 交互式图可视化库（交互式可视化，力导向布局，生成html，基于vis.js）
     except ImportError:
         logger.error("networkx或pyvis未安装, 请执行: pip install networkx pyvis")
         return "<div style='text-align:center;padding:50px;color:red;'>可视化依赖未安装</div>"
 
     G = nx.DiGraph()
-    entity_types = {}
     for t in triplets:
         e1 = t.get("entity1", t.get("实体1", ""))
         rel = t.get("relation", t.get("关系", ""))
@@ -78,13 +77,13 @@ def build_graph_html(triplets: List[Dict], title: str = "知识图谱", height: 
     net = Network(
         height=height,
         width="100%",
-        directed=True,
+        directed=True,  # 有向
         notebook=False,
         bgcolor="#ffffff",
         font_color="#333333",
     )
 
-    net.from_nx(G)
+    net.from_nx(G) # 将networkx的图结构转换为pyvis的节点/边列表
 
     color_palette = [
         "#FF6B6B", "#4ECDC4", "#45B7D1", "#96CEB4",
@@ -109,7 +108,7 @@ def build_graph_html(triplets: List[Dict], title: str = "知识图谱", height: 
     {
         "physics": {
             "enabled": true,
-            "barnesHut": {
+            "barnesHut": { 
                 "gravitationalConstant": -8000,
                 "centralGravity": 0.3,
                 "springLength": 150,

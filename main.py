@@ -1,6 +1,11 @@
 import streamlit as st
 from main.pages import home, doc_extract, csv_manage, neo4j_import, knowledge_search, graph_visual, system_admin
+import os
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+import warnings
+warnings.filterwarnings("ignore", category=FutureWarning)
 st.set_page_config(
     page_title="企业知识图谱平台",
     page_icon="🏢",

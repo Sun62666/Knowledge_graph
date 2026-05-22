@@ -15,6 +15,18 @@ from utils.logger import get_logger
 logger = get_logger()
 
 
+def _read_tail_lines(file_path: str, max_lines: int = 2000):
+    with open(file_path, "r", encoding="utf-8") as f:
+        f.seek(0, 2)
+        file_size = f.tell()
+        buf_size = min(file_size, 65536)
+        f.seek(max(0, file_size - buf_size))
+        tail = f.read().strip().split("\n")
+        if len(tail) > max_lines:
+            tail = tail[-max_lines:]
+        return tail
+
+
 def render():
     st.title("⚙️ 系统管理")
     st.markdown("查看系统配置、运行日志，执行系统重置")
@@ -49,15 +61,12 @@ def render():
 
     if os.path.exists(LOG_FILE_PATH):
         try:
-            with open(LOG_FILE_PATH, "r", encoding="utf-8") as f:
-                log_content = f.read()
-            log_lines = log_content.strip().split("\n")
+            log_lines = _read_tail_lines(LOG_FILE_PATH, 2000)
             total_lines = len(log_lines)
             show_lines = st.slider("显示行数", 10, min(500, total_lines), min(100, total_lines))
-
             display_lines = log_lines[-show_lines:]
             st.code("\n".join(display_lines), language="log")
-            st.caption(f"显示最近 {show_lines} 行，共 {total_lines} 行")
+            st.caption(f"显示最近 {show_lines} 行，共 {total_lines} 行（已读取最后2000行）")
         except Exception as e:
             st.error(f"日志读取失败: {e}")
     else:
@@ -66,34 +75,63 @@ def render():
     st.markdown("---")
     st.subheader("🔄 系统重置")
 
+    if "admin_msg" in st.session_state:
+        msg_type, msg_text = st.session_state["admin_msg"]
+        if msg_type == "success":
+            st.success(msg_text, icon="✅")
+        elif msg_type == "warning":
+            st.warning(msg_text, icon="⚠️")
+        elif msg_type == "error":
+            st.error(msg_text, icon="❌")
+        del st.session_state["admin_msg"]
+
     st.warning("⚠️ 以下操作不可恢复，请谨慎执行！")
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
         if st.button("🗑️ 清空CSV数据"):
-            csv_mgr = CSVManager()
-            csv_mgr.clear_csv()
-            st.success("CSV数据已清空")
+            if "confirm_clear_csv" not in st.session_state:
+                st.session_state["confirm_clear_csv"] = True
+                st.warning("⚠️ 再次点击确认清空CSV！")
+            else:
+                csv_mgr = CSVManager()
+                csv_mgr.clear_csv()
+                del st.session_state["confirm_clear_csv"]
+                st.session_state["admin_msg"] = ("success", "CSV数据已清空")
+                st.rerun()
 
     with col2:
         if st.button("🗑️ 清空Neo4j数据"):
-            neo4j_ops = Neo4jOperations()
-            ok, msg = neo4j_ops.clear_all()
-            if ok:
-                st.success(msg)
+            if "confirm_clear_neo4j" not in st.session_state:
+                st.session_state["confirm_clear_neo4j"] = True
+                st.warning("⚠️ 再次点击确认清空Neo4j！")
             else:
-                st.error(msg)
+                neo4j_ops = Neo4jOperations()
+                ok, msg = neo4j_ops.clear_all()
+                del st.session_state["confirm_clear_neo4j"]
+                if ok:
+                    st.session_state["admin_msg"] = ("success", "Neo4j数据已清空")
+                else:
+                    st.session_state["admin_msg"] = ("error", f"清空失败: {msg}")
+                st.rerun()
 
     with col3:
         if st.button("🗑️ 清除所有缓存"):
             clear_cache()
-            st.success("缓存已清除")
+            st.session_state["admin_msg"] = ("success", "缓存已清除")
+            st.rerun()
 
-    if st.button("🔴 全部重置（CSV + Neo4j + 缓存）", type="secondary"):
-        csv_mgr = CSVManager()
-        csv_mgr.clear_csv()
-        neo4j_ops = Neo4jOperations()
-        neo4j_ops.clear_all()
-        clear_cache()
-        st.success("系统已全部重置")
+    if st.button("🔴 全部重置（CSV + Neo4j + 缓存）"):
+        if "confirm_reset_all" not in st.session_state:
+            st.session_state["confirm_reset_all"] = True
+            st.warning("⚠️ 再次点击确认全部重置！此操作将清空所有数据！")
+        else:
+            csv_mgr = CSVManager()
+            csv_mgr.clear_csv()
+            neo4j_ops = Neo4jOperations()
+            neo4j_ops.clear_all()
+            clear_cache()
+            del st.session_state["confirm_reset_all"]
+            st.session_state["admin_msg"] = ("success", "系统已全部重置")
+            st.rerun()

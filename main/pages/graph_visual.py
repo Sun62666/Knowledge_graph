@@ -1,4 +1,7 @@
+import os
+
 import streamlit as st
+import tempfile
 from modules.neo4j_ops.operations import Neo4jOperations
 from utils.visualizer import build_graph_html, clear_cache
 from utils.logger import get_logger
@@ -41,6 +44,7 @@ def render():
         if st.button("🗑️ 清除缓存"):
             clear_cache()
             st.session_state["graph_data"] = None
+            st.session_state["graph_html_cache"] = None
             st.success("缓存已清除")
 
     if st.session_state.get("load_graph", False):
@@ -48,6 +52,7 @@ def render():
             with st.spinner("正在从Neo4j加载全量图谱数据..."):
                 data = neo4j_ops.query_all()
                 st.session_state["graph_data"] = data
+                st.session_state["graph_html_cache"] = None
 
         data = st.session_state["graph_data"]
 
@@ -64,11 +69,27 @@ def render():
                 e2 = r.get("entity2", "")
                 st.markdown(f"{i+1}. **{e1}** → _{rel}_ → **{e2}**")
 
-        with st.spinner("正在生成交互式图谱..."):
-            html = build_graph_html(data, title="企业知识图谱", height="650px")
+        if st.session_state.get("graph_html_cache") is None:
+            with st.spinner("正在生成交互式图谱..."):
+                html = build_graph_html(data, title="企业知识图谱", height="650px")
+                st.session_state["graph_html_cache"] = html
+        else:
+            html = st.session_state["graph_html_cache"]
 
         if html:
-            st.components.v1.html(html, height=700, scrolling=True)
+            old_file = st.session_state.get("graph_temp_file")
+            if old_file and os.path.exists(old_file):
+                try:
+                    os.remove(old_file)
+                    logger.debug(f"已删除旧临时文件: {old_file}")
+                except Exception as e:
+                    logger.warning(f"删除旧临时文件失败: {e}")
+            if "graph_temp_file" not in st.session_state:
+                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".html", mode="w", encoding="utf-8")
+                temp_file.write(html)
+                temp_file.close()
+                st.session_state["graph_temp_file"] = temp_file.name
+            st.iframe(st.session_state["graph_temp_file"], height=700)
             st.caption("💡 图谱支持拖拽、缩放、高亮节点，点击节点可查看关联关系")
         else:
             st.error("图谱生成失败")
